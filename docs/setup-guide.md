@@ -126,7 +126,7 @@ OpenCV ставится через `pip` внутри conda-окружения �
 
 ```python
 !pip install -q opencv-contrib-python==4.14.0.94
-!pip install -q git+https://github.com/<org>/iu-intro-cv.git
+!pip install -q git+https://github.com/afanasyspb/iu-intro-cv.git
 import cvcourse; print(cvcourse.__version__)
 ```
 
