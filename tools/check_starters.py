@@ -20,8 +20,8 @@ def check(path):
     r = subprocess.run(
         [sys.executable, "-m", "jupyter", "nbconvert", "--to", "notebook",
          "--execute", "--stdout", "--ExecutePreprocessor.timeout=" + TIMEOUT, path],
-        capture_output=True, text=True,
-        env=dict(os.environ, MPLBACKEND="Agg"))
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=dict(os.environ, MPLBACKEND="Agg", PYTHONIOENCODING="utf-8"))
     if r.returncode == 0:
         return "выполнилась целиком — в заготовке не осталось TODO"
     if any(e in r.stderr for e in OK_ERRORS):
