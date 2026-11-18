@@ -10,6 +10,7 @@
 
 Данные синтетические: ни фото лекции, ни сеть тестам не нужны.
 """
+import ast
 import io
 import json
 import os
@@ -50,14 +51,12 @@ def sol():
         hit = [w for w in WANTED if "def %s(" % w in src]
         if not hit:
             continue
-        sep = "\n" * 3               # определение отделено пустой строкой; до него могут стоять константы
-        for chunk in src.split(sep):
-            exec(compile(chunk, "<lab08>", "exec"), g)
-            defined = [w for w in hit if "def %s(" % w in chunk]
-            if defined:
-                if "NotImplementedError" in chunk:   # пропуск в заготовке не заполнен
-                    g["__todo__"].update(defined)
-                    break                                # дальше в ячейке — ассерты, они не нужны
+        # Import definitions and helpers without executing notebook demonstrations.
+        for node in ast.parse(src).body:
+            if isinstance(node, ast.FunctionDef):
+                exec(compile(ast.Module(body=[node], type_ignores=[]), '<lab08>', 'exec'), g)
+                if 'NotImplementedError' in ast.get_source_segment(src, node):
+                    g['__todo__'].add(node.name)
     for name in WANTED:
         if name not in g:
             pytest.skip("в ноутбуке нет функции %s" % name)
@@ -128,7 +127,7 @@ def test_moment_matrix_corner_vs_edge(sol, corner_scene):
     need(sol, "moment_matrix")
     A, B, C = sol["moment_matrix"](corner_scene, ksize=3, block_size=7)
     corner_val = A[64, 64] + B[64, 64]
-    edge_val = A[96, 64] + B[96, 64]
+    edge_val = A[96, 32] + B[96, 32]
     flat_val = A[110, 20] + B[110, 20]
     assert corner_val > edge_val * 0.5, "на углу A+B должно быть больше, чем на крае"
     assert edge_val > flat_val * 5, "на крае A+B должно быть больше, чем на ровном"
@@ -160,16 +159,16 @@ def test_harris_correlates_with_cv2(sol, scene):
     assert corr > 0.8, "корреляция с cv2.cornerHarris должна быть > 0.8 (сейчас %.3f)" % corr
 
 
-def test_shi_tomasi_response_corner_gt_edge_gt_flat(sol, corner_scene):
-    """Ши-Томаси: R(угол) > R(край) > R(ровное)."""
+def test_shi_tomasi_corner_and_rank_one_edge(sol, corner_scene):
+    """Ши-Томаси: R(угол) > 0; на идеальном крае и ровном участке R = 0."""
     need(sol, "shi_tomasi_response", "moment_matrix")
     R = sol["shi_tomasi_response"](corner_scene, ksize=3, block_size=7)
     assert R.shape == corner_scene.shape
     R_corner = R[64, 64]
-    R_edge = R[96, 64]
+    R_edge = R[96, 32]
     R_flat = R[110, 20]
     assert R_corner > R_edge, "на углу min(λ₁,λ₂) больше, чем на крае"
-    assert R_edge > R_flat, "на крае min(λ₁,λ₂) больше, чем на ровном"
+    assert np.isclose(R_edge, 0, atol=1e-9) and np.isclose(R_flat, 0, atol=1e-9)
 
 
 def test_repeatability_zero_angle(sol, scene):
@@ -185,4 +184,12 @@ def test_repeatability_rotation_invariance(sol, scene):
     need(sol, "repeatability", "harris_response", "moment_matrix")
     img = scene.astype(np.float64)
     rep = sol["repeatability"](img, angle=30, block_size=7, ksize=3, k=0.04, threshold_frac=0.01)
-    assert rep > 0.2, "при повороте на 30° повторяемость Харриса должна быть > 0.2 (сейчас %.2f)" % rep  
+    assert rep > 0.2, "при повороте на 30° повторяемость Харриса должна быть > 0.2 (сейчас %.2f)" % rep
+
+
+def test_shi_tomasi_matches_symmetric_eigensolver(sol, corner_scene):
+    need(sol, 'moment_matrix', 'shi_tomasi_response')
+    A, B, C = sol['moment_matrix'](corner_scene)
+    matrices = np.stack([np.stack([A, C], -1), np.stack([C, B], -1)], -2)
+    expected = np.linalg.eigvalsh(matrices)[..., 0]
+    np.testing.assert_allclose(sol['shi_tomasi_response'](corner_scene), expected, atol=1e-8)
