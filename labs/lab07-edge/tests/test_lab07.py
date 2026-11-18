@@ -10,6 +10,7 @@
 
 Данные синтетические: ни фото лекции, ни сеть тестам не нужны.
 """
+import ast
 import io
 import json
 import os
@@ -50,14 +51,12 @@ def sol():
         hit = [w for w in WANTED if "def %s(" % w in src]
         if not hit:
             continue
-        sep = "\n" * 3               # определение отделено пустой строкой; до него могут стоять константы
-        for chunk in src.split(sep):
-            exec(compile(chunk, "<lab07>", "exec"), g)
-            defined = [w for w in hit if "def %s(" % w in chunk]
-            if defined:
-                if "NotImplementedError" in chunk:   # пропуск в заготовке не заполнен
-                    g["__todo__"].update(defined)
-                    break                                # дальше в ячейке — ассерты, они не нужны
+        # Include helper definitions such as _shift, without running demonstrations.
+        for node in ast.parse(src).body:
+            if isinstance(node, ast.FunctionDef):
+                exec(compile(ast.Module(body=[node], type_ignores=[]), "<lab07>", "exec"), g)
+                if "NotImplementedError" in ast.get_source_segment(src, node):
+                    g["__todo__"].add(node.name)
     for name in WANTED:
         if name not in g:
             pytest.skip("в ноутбуке нет функции %s" % name)
@@ -191,7 +190,7 @@ def test_ransac_line_angle(sol, line_points):
     need(sol, "ransac_line")
     model, inliers = sol["ransac_line"](line_points, threshold=4.0)
     a, b, c = model
-    angle = np.rad2deg(np.arctan2(-a, b)) % 180
+    angle = np.rad2deg(np.arctan2(b, a)) % 180
     assert abs(angle - 35) < 10 or abs(angle - 35 + 180) < 10, (
         "угол прямой должен быть около 35° (сейчас %.0f°)" % angle)
 
@@ -203,3 +202,27 @@ def test_ransac_inliers_consistent_with_model(sol, line_points):
     a, b, c = model
     dist = np.abs(a * line_points[:, 0] + b * line_points[:, 1] + c) / np.sqrt(a ** 2 + b ** 2)
     assert dist[inliers].max() < 4.0, "все инлайеры должны лежать ближе порога к прямой"
+
+
+def test_shift_array_directions_without_border_wrap(sol):
+    need(sol, 'canny_manual')
+    values = np.arange(25).reshape(5, 5)
+    directions = np.arange(25).reshape(5, 5) % 4
+    for sign in (-1, 1):
+        actual = sol['_shift'](values, directions, sign)
+        expected = np.zeros_like(values)
+        for y in range(5):
+            for x in range(5):
+                dy, dx = ((0, 1), (1, 1), (1, 0), (1, -1))[directions[y, x]]
+                sy, sx = y + sign * dy, x + sign * dx
+                if 0 <= sy < 5 and 0 <= sx < 5:
+                    expected[y, x] = values[sy, sx]
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_ransac_all_inliers_terminates(sol):
+    need(sol, 'ransac_line')
+    x = np.arange(20, dtype=float)
+    points = np.column_stack([x, 2 * x + 3])
+    model, inliers = sol['ransac_line'](points, threshold=.001)
+    assert inliers.all() and np.isfinite(model).all()
