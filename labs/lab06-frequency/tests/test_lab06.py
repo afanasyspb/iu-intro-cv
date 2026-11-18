@@ -10,6 +10,7 @@
 
 Данные синтетические: ни фото лекции, ни сеть тестам не нужны.
 """
+import ast
 import io
 import json
 import os
@@ -55,14 +56,17 @@ def sol():
         hit = [w for w in WANTED if f"def {w}(" in src]
         if not hit:
             continue
-        sep = "\n" * 3               # определение отделено пустой строкой; до него могут стоять константы
-        for chunk in src.split(sep):
-            exec(compile(chunk, "<lab06>", "exec"), g)
-            defined = [w for w in hit if f"def {w}(" in chunk]
-            if defined:
-                if "NotImplementedError" in chunk:   # пропуск в заготовке не заполнен
-                    g["__todo__"].update(defined)
-                    break                                # дальше в ячейке — ассерты, они не нужны
+        # Import definitions only: demonstration code needs earlier notebook cells.
+        for node in ast.parse(src).body:
+            if isinstance(node, ast.FunctionDef):
+                exec(compile(ast.Module(body=[node], type_ignores=[]), "<lab06>", "exec"), g)
+                if "NotImplementedError" in ast.get_source_segment(src, node):
+                    g["__todo__"].add(node.name)
+            elif isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "K1" for target in node.targets
+            ):
+                # The pyramid functions use this notebook-defined filter kernel.
+                exec(compile(ast.Module(body=[node], type_ignores=[]), "<lab06>", "exec"), g)
     for name in WANTED:
         if name not in g:
             pytest.skip(f"в ноутбуке нет функции {name}")
@@ -94,7 +98,7 @@ def periodic_scene(scene):
     """Кадр с прибавленной периодической помехой: пара точек в спектре."""
     h, w = scene.shape
     yy, xx = np.mgrid[:h, :w].astype(np.float64)
-    pat = 20.0 * np.sin(2 * np.pi * (xx * 7 / w + yy * 11 / h))
+    pat = 20.0 * np.sin(2 * np.pi * (xx * 53 / w + yy * 39 / h))
     noisy = np.clip(scene.astype(np.float64) + pat, 0, 255).astype(np.uint8)
     return noisy
 
@@ -141,7 +145,7 @@ def test_find_peak_finds_periodic_noise(sol, periodic_scene):
     spec = np.fft.fft2(periodic_scene.astype(np.float64))
     du, dv = sol["find_peak"](spec)
     assert (du, dv) != (0, 0), "пик не должен быть в центре (DC)"
-    assert abs(du) + abs(dv) > 10, "пик должен быть заметно удалён от центра"
+    assert (du, dv) in ((39, 53), (-39, -53)), "пик должен соответствовать заданной частоте, вне DC ±32"
     A = np.abs(np.fft.fftshift(spec))
     cy, cx = A.shape[0] // 2, A.shape[1] // 2
     peak_val = A[cy + du, cx + dv]
@@ -214,3 +218,31 @@ def test_blend_bands_n0_is_linear(sol, scene):
     assert bl.dtype == np.float64
     assert np.abs(bl - linear).max() < 1.0, "n=0 должно совпадать с линейной маской"
     assert bl.max() <= 255.0, "значения вышли за 255"
+
+
+@pytest.mark.parametrize('shape,kernel_shape', [((17, 23), (3, 7)), ((32, 19), (5, 1))])
+def test_conv_dft_zero_boundary_matches_scipy(sol, shape, kernel_shape):
+    """Check the full image and zero-padded boundaries against another implementation."""
+    need(sol, 'conv_dft')
+    from scipy.signal import convolve2d
+    rng = np.random.default_rng(60)
+    image, kernel = rng.normal(size=shape), rng.normal(size=kernel_shape)
+    np.testing.assert_allclose(sol['conv_dft'](image, kernel),
+                               convolve2d(image, kernel, mode='same', boundary='fill'), atol=1e-10)
+
+
+def test_notch_known_frequency_and_dc(sol):
+    need(sol, 'find_peak', 'notch_reject')
+    yy, xx = np.mgrid[:120, :160]
+    image = 128. + 20. * np.sin(2 * np.pi * (53 * xx / 160 + 39 * yy / 120))
+    assert sol['find_peak'](np.fft.fft2(image)) in ((39, 53), (-39, -53))
+    np.testing.assert_allclose(sol['notch_reject'](image, r=2), 128., atol=1e-8)
+
+
+def test_pyramid_color_odd_size_and_mask_endpoints(sol):
+    need(sol, 'pyr_down', 'blend_bands', 'lap_pyr', 'gauss_pyr', 'collapse')
+    image = np.random.default_rng(61).uniform(0, 255, (63, 97, 3)).astype(np.float32)
+    np.testing.assert_allclose(sol['pyr_down'](image), cv2.pyrDown(image), atol=5e-5)
+    for value, expected in ((1., image), (0., image[::-1])):
+        mask = np.full(image.shape[:2], value, np.float32)
+        np.testing.assert_allclose(sol['blend_bands'](image, image[::-1], mask, n=3), expected, atol=1e-4)
