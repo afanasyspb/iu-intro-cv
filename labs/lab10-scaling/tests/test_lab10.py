@@ -10,6 +10,7 @@
 
 Данные синтетические: ни фото лекции, ни сеть тестам не нужны.
 """
+import ast
 import io
 import json
 import os
@@ -50,14 +51,12 @@ def sol():
         hit = [w for w in WANTED if "def %s(" % w in src]
         if not hit:
             continue
-        sep = "\n" * 3
-        for chunk in src.split(sep):
-            exec(compile(chunk, "<lab10>", "exec"), g)
-            defined = [w for w in hit if "def %s(" % w in chunk]
-            if defined:
-                if "NotImplementedError" in chunk:
-                    g["__todo__"].update(defined)
-                    break
+        # Import definitions and helpers without executing notebook demonstrations.
+        for node in ast.parse(src).body:
+            if isinstance(node, ast.FunctionDef):
+                exec(compile(ast.Module(body=[node], type_ignores=[]), '<lab10>', 'exec'), g)
+                if 'NotImplementedError' in ast.get_source_segment(src, node):
+                    g['__todo__'].add(node.name)
     for name in WANTED:
         if name not in g:
             pytest.skip("в ноутбуке нет функции %s" % name)
@@ -184,22 +183,26 @@ def test_resize_cycle_test_different_methods(sol, scene):
     assert err_linear < 10.0 and err_cubic < 10.0
 
 
-def test_resize_composition_test_positive_errors(sol, scene):
-    """Ошибки композиции и коммутативности должны быть > 0."""
+def test_resize_composition_nonnegative_and_separable(sol, scene):
+    """Композиция на этой сцене неточна, а разделимые проходы коммутируют."""
     need(sol, "resize_composition_test")
     img = scene.astype(np.float64)
     comp_err, comm_err = sol["resize_composition_test"](img, method=cv2.INTER_LINEAR)
     assert comp_err > 0, "композиция не может быть точной для стандартных методов"
-    assert comm_err > 0, "коммутативность не может быть точной для стандартных методов"
+    assert np.isclose(comm_err, 0, atol=1e-10), "разделимые проходы билинейного ресайза коммутируют"
 
 
-def test_resize_composition_test_small_errors(sol, scene):
-    """Ошибки композиции и коммутативности должны быть малыми (< 2 кодов)."""
+def test_resize_composition_matches_independent_reference(sol, scene):
+    """Compare the returned metrics to explicit OpenCV paths, not data-dependent limits."""
     need(sol, "resize_composition_test")
     img = scene.astype(np.float64)
+    h, w = img.shape
     comp_err, comm_err = sol["resize_composition_test"](img, method=cv2.INTER_LINEAR)
-    assert comp_err < 2.0, "ошибка композиции должна быть малой (сейчас %.3f)" % comp_err
-    assert comm_err < 2.0, "ошибка коммутативности должна быть малой (сейчас %.3f)" % comm_err
+    half = cv2.resize(img, (w // 2, h // 2), interpolation=cv2.INTER_LINEAR)
+    twice = cv2.resize(half, (w // 4, h // 4), interpolation=cv2.INTER_LINEAR)
+    direct = cv2.resize(img, (w // 4, h // 4), interpolation=cv2.INTER_LINEAR)
+    np.testing.assert_allclose(comp_err, np.sqrt(np.mean((twice - direct)**2)), atol=1e-12)
+    np.testing.assert_allclose(comm_err, 0, atol=1e-10)
 
 
 def test_resize_composition_test_returns_tuple(sol, scene):
